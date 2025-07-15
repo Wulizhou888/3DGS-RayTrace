@@ -1,0 +1,11 @@
+prefix=/home/wulizhou/vulkan-sim-root/mesa-vulkan-sim/lib
+libdir=${prefix}/lib/x86_64-linux-gnu
+includedir=${prefix}/include
+
+Name: egl
+Description: Mesa EGL Library
+Version: 23.2.0-devel
+Requires.private: x11, xext, xfixes, x11-xcb, xcb, xcb-glx >=  1.8.1, xcb-dri2 >=  1.8, xxf86vm, libdrm >=  2.4.75
+Libs: -L${libdir} -lEGL
+Libs.private: -lpthread -pthread -lm
+Cflags: -I${includedir}

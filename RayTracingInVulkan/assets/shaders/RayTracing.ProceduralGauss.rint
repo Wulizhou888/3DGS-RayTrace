@@ -1,0 +1,118 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_debug_printf : enable
+
+#include "RayPayload.glsl"
+#include "UniformBufferObject.glsl"
+#include "Gauss.glsl"
+
+struct ExpSeg
+{
+    float slope;
+    float bias;
+};
+
+layout(binding = 3) readonly uniform UniformBufferObjectStruct { UniformBufferObject Camera; };
+layout(binding = 12) readonly buffer GaussArray { GaussParam[] GaussList; };
+layout(binding = 13) buffer NextKBuffer { SplatInfo[][8] NextK; };
+layout(binding = 14) buffer RayInfoBuffer { RayInfo[] Rays; };
+layout(binding = 15) buffer ExpLUTBuffer { ExpSeg[] ExpSegs; };
+
+hitAttributeEXT SplatInfo Splat;
+
+bool CompareSwap(inout SplatInfo Que, inout SplatInfo New)
+{
+    if (Que.depth > New.depth) {
+        SplatInfo tmp = New;
+        New = Que;
+        Que = tmp;
+        return true;
+    }
+    return false;  // No Swap
+}
+
+bool InsertNewSplat(int ray_id, SplatInfo NewSplat)
+{
+    bool HasInsert = false;
+    for (int i = 0; i < 8; i++) {
+        bool Swapped = CompareSwap(NextK[ray_id][i], NewSplat);
+        HasInsert = HasInsert || Swapped;
+    }
+    return HasInsert;
+}
+
+float LinearExp(float x) {
+    float tx = x * 32; // x / 8(range) * 256(segs)
+    uint qx = uint(tx);
+    float dqx = float(qx) / 32.0;
+    float dx = x - dqx;
+    float k = ExpSegs[qx].slope;
+    float b = ExpSegs[qx].bias;
+    float ex = k * dx + b;
+    return ex;
+}
+
+void main()
+{
+    vec2 pixel = vec2(gl_LaunchIDEXT.xy);
+    int ray_id = int(pixel.x) + 16 * int(pixel.y);
+
+	// Decode the Parameter
+    const GaussParam gauss = GaussList[gl_InstanceCustomIndexEXT];
+    const vec3 center = gauss.CenterOpacity.xyz;
+    const float opacity = gauss.CenterOpacity.w;
+
+    // Transform: World to Camera to Screen
+    vec4 t = Camera.ModelView * vec4(center, 1.0);
+    float depth = t.z;
+    if (depth <= Rays[ray_id].Depth) {
+        return;  // Cull the pre-visited Gauss
+    }
+    vec4 p_hom = Camera.Projection * t;
+    vec3 p_ndc = p_hom.xyz / p_hom.w;
+    vec2 resolution = vec2(gl_LaunchSizeEXT.xy);
+    vec2 p_pix = (p_ndc.xy + 1.0) * resolution * 0.5; 
+
+    // Compute Jacobian
+    float fx = Camera.Projection[0][0] * Camera.Height * 0.5;
+    float fy = Camera.Projection[1][1] * Camera.Height * 0.5;
+    mat3 J = mat3(
+        fx/t.z, 0.0, 0.0,
+		0.0, fy/t.z, 0.0,
+		-fx*t.x/(t.z*t.z), -fy*t.y/(t.z*t.z), 0.0
+	);
+
+    // Convert Cov3D to Cov2D
+    mat3 W = mat3(Camera.ModelView); // W2C Rotation
+    mat3 T = J * W; // Linear-approx Prpjection
+    mat3 Cov3D = mat3(
+        gauss.Cov3D_0, gauss.Cov3D_1, gauss.Cov3D_2,
+        gauss.Cov3D_1, gauss.Cov3D_3, gauss.Cov3D_4,
+        gauss.Cov3D_2, gauss.Cov3D_4, gauss.Cov3D_5
+	);
+    mat3 V = T * Cov3D * transpose(T);
+	const float a = V[0][0];
+	const float b = V[0][1];
+	const float c = V[1][1];
+
+    // Check Intersection
+    float dx = pixel.x - p_pix.x;
+    float dy = pixel.y - p_pix.y;
+    float g = 0.5 * (a * dx * dx + 2 * b * dx * dy + c * dy * dy);
+    if (g < 0 || g > 5.6) { return; }
+    float power = LinearExp(g);
+    float alpha = opacity * power;
+    // float alpha = opacity * g;
+    if (alpha > (1.0 / 255.0)) {
+        // ---- Anyhit Shader ----
+        SplatInfo NewSplat = { depth, alpha };
+        bool HasInsert = InsertNewSplat(ray_id, NewSplat);
+        if (HasInsert) {
+            // Increase the Gauss Number if there are any insert
+            Rays[ray_id].GaussNum += 1;
+        }
+        reportIntersectionEXT(depth, 0); 
+    }
+}
+

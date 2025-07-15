@@ -1,0 +1,11 @@
+prefix=/home/wulizhou/vulkan-sim-root/mesa-vulkan-sim/lib
+libdir=${prefix}/lib/x86_64-linux-gnu
+includedir=${prefix}/include
+
+dridriverdir=/home/wulizhou/vulkan-sim-root/mesa-vulkan-sim/lib/lib/x86_64-linux-gnu/dri
+
+Name: dri
+Description: Direct Rendering Infrastructure
+Version: 23.2.0-devel
+Requires.private: libdrm >=  2.4.102
+Cflags: -I${includedir}
